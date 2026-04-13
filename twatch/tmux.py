@@ -9,7 +9,7 @@ import subprocess
 import unicodedata
 from typing import Iterable, Optional
 
-FMT = "#{session_name}|#{session_attached}|#{session_activity}"
+FMT = "#{session_id}|#{session_name}|#{session_attached}|#{session_activity}"
 
 
 def tmux_ok() -> bool:
@@ -53,12 +53,13 @@ def list_sessions() -> Optional[list[dict]]:
     for line in out.stdout.splitlines():
         if not line:
             continue
-        name, attached, activity = line.split("|", 2)
+        sid, name, attached, activity = line.split("|", 3)
         rows.append({
+            "id": sid,
             "name": name,
             "attached": int(attached) > 0,
             "activity": int(activity),
-            "dead": name in dead,
+            "dead": sid in dead,
         })
     return rows
 
@@ -66,7 +67,7 @@ def list_sessions() -> Optional[list[dict]]:
 def _dead_sessions() -> set[str]:
     try:
         out = subprocess.run(
-            ["tmux", "list-panes", "-a", "-F", "#{session_name}|#{pane_dead}"],
+            ["tmux", "list-panes", "-a", "-F", "#{session_id}|#{pane_dead}"],
             capture_output=True, text=True, check=False,
         )
     except FileNotFoundError:
@@ -77,9 +78,9 @@ def _dead_sessions() -> set[str]:
     for line in out.stdout.splitlines():
         if not line:
             continue
-        name, d = line.split("|", 1)
+        sid, d = line.split("|", 1)
         if d == "1":
-            dead.add(name)
+            dead.add(sid)
     return dead
 
 
@@ -177,3 +178,14 @@ def current_session_name() -> Optional[str]:
         return None
     name = r.stdout.strip()
     return name or None
+
+
+def current_session_id() -> Optional[str]:
+    r = subprocess.run(
+        ["tmux", "display-message", "-p", "#{session_id}"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        return None
+    sid = r.stdout.strip()
+    return sid or None

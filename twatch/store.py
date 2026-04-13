@@ -5,27 +5,71 @@ import json
 import os
 import time
 from pathlib import Path
+from typing import Optional
 
 STORE_DIR = Path.home() / ".twatch"
 STORE_PATH = STORE_DIR / "sessions.json"
 STORE_BAK = STORE_DIR / "sessions.json.bak"
 STALE_SECONDS = 30 * 24 * 3600
+SCHEMA_VERSION = 2
+
+
+def _empty_store() -> dict:
+    return {"version": SCHEMA_VERSION, "sessions": {}}
 
 
 def load_store() -> dict:
     if not STORE_PATH.exists():
-        return {}
+        return _empty_store()
     try:
         data = json.loads(STORE_PATH.read_text())
         if not isinstance(data, dict):
             raise ValueError("not a dict")
-        return data
     except Exception:
         try:
             STORE_PATH.replace(STORE_BAK)
         except Exception:
             pass
-        return {}
+        return _empty_store()
+
+    if data.get("version") == SCHEMA_VERSION:
+        data.setdefault("sessions", {})
+        return data
+
+    if "version" not in data:
+        migrated = _migrate_v1_to_v2(data)
+        try:
+            save_store(migrated)
+        except Exception:
+            pass
+        return migrated
+
+    # Unknown future version — don't crash, return empty.
+    return _empty_store()
+
+
+def _migrate_v1_to_v2(old: dict) -> dict:
+    from twatch import tmux  # lazy to avoid circular import
+
+    live = tmux.list_sessions() or []
+    name_to_id = {s["name"]: s["id"] for s in live}
+
+    new_sessions: dict = {}
+    for old_name, entry in old.items():
+        if old_name == "version" or not isinstance(entry, dict):
+            continue
+        sid = name_to_id.get(old_name)
+        migrated = {
+            "name": old_name,
+            "title": entry.get("title", ""),
+            "notes": entry.get("notes", ""),
+            "last_seen": int(entry.get("last_seen", time.time())),
+        }
+        if sid is not None:
+            new_sessions[sid] = migrated
+        else:
+            new_sessions[f"__orphan__:{old_name}"] = migrated
+    return {"version": SCHEMA_VERSION, "sessions": new_sessions}
 
 
 def save_store(store: dict) -> None:
@@ -37,26 +81,38 @@ def save_store(store: dict) -> None:
 
 def default_entry(name: str) -> dict:
     return {
-        "title": name,
+        "name": name,
+        "title": "",
         "notes": "",
         "last_seen": int(time.time()),
     }
 
 
-def ensure_entry(store: dict, name: str) -> dict:
-    if name not in store:
-        store[name] = default_entry(name)
+def ensure_entry(store: dict, sid: str, name: str) -> dict:
+    sessions = store.setdefault("sessions", {})
+    if sid not in sessions:
+        sessions[sid] = default_entry(name)
     else:
+        entry = sessions[sid]
         for k, v in default_entry(name).items():
-            store[name].setdefault(k, v)
-    return store[name]
+            entry.setdefault(k, v)
+        entry["name"] = name
+    return sessions[sid]
 
 
-def cleanup_stale(store: dict, alive_names: set) -> None:
+def cleanup_stale(store: dict, alive_ids: set) -> None:
+    sessions = store.setdefault("sessions", {})
     now = int(time.time())
-    for name in list(store.keys()):
-        if name in alive_names:
-            store[name]["last_seen"] = now
+    for sid in list(sessions.keys()):
+        if sid in alive_ids:
+            sessions[sid]["last_seen"] = now
             continue
-        if now - int(store[name].get("last_seen", now)) > STALE_SECONDS:
-            store.pop(name, None)
+        if now - int(sessions[sid].get("last_seen", now)) > STALE_SECONDS:
+            sessions.pop(sid, None)
+
+
+def id_for_name(store: dict, name: str) -> Optional[str]:
+    for sid, entry in store.get("sessions", {}).items():
+        if entry.get("name") == name:
+            return sid
+    return None

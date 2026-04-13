@@ -143,6 +143,7 @@ class TwatchApp(App):
 
     sessions: reactive[list[dict]] = reactive(list, always_update=True)
     selected_name: reactive[Optional[str]] = reactive(None)
+    selected_id: reactive[Optional[str]] = reactive(None)
 
     def __init__(self) -> None:
         super().__init__()
@@ -162,8 +163,8 @@ class TwatchApp(App):
     def on_mount(self) -> None:
         fresh = tmux.list_sessions() or []
         for s in fresh:
-            store_mod.ensure_entry(self.store, s["name"])
-        store_mod.cleanup_stale(self.store, {s["name"] for s in fresh})
+            store_mod.ensure_entry(self.store, s["id"], s["name"])
+        store_mod.cleanup_stale(self.store, {s["id"] for s in fresh})
         store_mod.save_store(self.store)
         self.sessions = fresh
         self.query_one("#sidebar", Tree).focus()
@@ -173,12 +174,12 @@ class TwatchApp(App):
         self._rebuild_tree(new)
         self._refresh_details()
 
-    def watch_selected_name(self, _old: Optional[str], _new: Optional[str]) -> None:
+    def watch_selected_id(self, _old: Optional[str], _new: Optional[str]) -> None:
         self._refresh_details()
 
     def _rebuild_tree(self, sessions: list[dict]) -> None:
         tree = self.query_one("#sidebar", Tree)
-        previous_selected = self.selected_name
+        previous_selected_id = self.selected_id
 
         tree.clear()
         root = tree.root
@@ -187,10 +188,10 @@ class TwatchApp(App):
 
         for s in sorted(
             sessions,
-            key=lambda s: (self.store.get(s["name"], {}).get("title") or s["name"]).lower(),
+            key=lambda s: (self.store["sessions"].get(s["id"], {}).get("title") or s["name"]).lower(),
         ):
-            store_mod.ensure_entry(self.store, s["name"])
-            meta = self.store.get(s["name"], {})
+            store_mod.ensure_entry(self.store, s["id"], s["name"])
+            meta = self.store["sessions"].get(s["id"], {})
             title = meta.get("title") or s["name"]
             markers = []
             if s.get("attached"):
@@ -200,9 +201,9 @@ class TwatchApp(App):
             prefix = (" ".join(markers) + " ") if markers else ""
             leaf = root.add_leaf(
                 f"{prefix}{title}",
-                data={"kind": "session", "name": s["name"]},
+                data={"kind": "session", "id": s["id"], "name": s["name"]},
             )
-            if previous_selected and s["name"] == previous_selected:
+            if previous_selected_id and s["id"] == previous_selected_id:
                 reselect_node = leaf
 
         target_node = reselect_node
@@ -217,6 +218,7 @@ class TwatchApp(App):
             tree.cursor_line = node.line
         data = node.data or {}
         if data.get("kind") == "session":
+            self.selected_id = data.get("id")
             self.selected_name = data.get("name")
 
     def _refresh_details(self) -> None:
@@ -224,23 +226,25 @@ class TwatchApp(App):
             details = self.query_one("#details-pane", DetailsPane)
         except Exception:
             return
-        name = self.selected_name
-        if not name:
+        sid = self.selected_id
+        if not sid:
             details.show(None, None)
             return
-        session = next((s for s in self.sessions if s["name"] == name), None)
-        meta = self.store.get(name) if session else None
+        session = next((s for s in self.sessions if s["id"] == sid), None)
+        meta = self.store["sessions"].get(sid) if session else None
         details.show(session, meta)
 
     def on_tree_node_highlighted(self, event: Tree.NodeHighlighted) -> None:
         node: TreeNode = event.node
         data = node.data
         if isinstance(data, dict):
+            self.selected_id = data.get("id")
             self.selected_name = data.get("name")
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         data = event.node.data
         if isinstance(data, dict) and data.get("kind") == "session":
+            self.selected_id = data.get("id")
             self.selected_name = data.get("name")
             self.action_attach()
 
@@ -280,8 +284,6 @@ class TwatchApp(App):
                     severity="error",
                 )
                 return
-            store_mod.ensure_entry(self.store, name)
-            store_mod.save_store(self.store)
             self.refresh_now()
             self.notify(f"created {name}")
 
@@ -313,10 +315,11 @@ class TwatchApp(App):
                     severity="error",
                 )
                 return
-            if name in self.store:
-                self.store[new_name] = self.store.pop(name)
-            else:
-                store_mod.ensure_entry(self.store, new_name)
+            # Store is sid-keyed — no rekey needed. ensure_entry on next refresh will update .name.
+            # But refresh is async; nudge the store now so the UI has correct state immediately.
+            sid = self.selected_id
+            if sid and sid in self.store["sessions"]:
+                self.store["sessions"][sid]["name"] = new_name
             store_mod.save_store(self.store)
             self.selected_name = new_name
             self.refresh_now()
@@ -327,7 +330,7 @@ class TwatchApp(App):
     def refresh_now(self) -> None:
         fresh = tmux.list_sessions() or []
         for s in fresh:
-            store_mod.ensure_entry(self.store, s["name"])
+            store_mod.ensure_entry(self.store, s["id"], s["name"])
         self.sessions = fresh
 
     async def poll_tmux_loop(self) -> None:
@@ -337,7 +340,7 @@ class TwatchApp(App):
             if fresh is None:
                 continue
             for s in fresh:
-                store_mod.ensure_entry(self.store, s["name"])
+                store_mod.ensure_entry(self.store, s["id"], s["name"])
             self.sessions = fresh
 
     def poll_tmux(self) -> None:

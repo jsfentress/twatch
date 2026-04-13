@@ -16,7 +16,7 @@ def cmd_list(args) -> int:
     sessions = tmux.list_sessions() or []
     store = store_mod.load_store()
     for s in sorted(sessions, key=lambda x: x["name"]):
-        meta = store_mod.ensure_entry(store, s["name"])
+        meta = store_mod.ensure_entry(store, s["id"], s["name"])
         att = "attached" if s["attached"] else "detached"
         title = meta.get("title") or s["name"]
         print(f"{s['name']}\t{title}\t{att}")
@@ -30,12 +30,13 @@ def cmd_register(args) -> int:
     if not os.environ.get("TMUX"):
         print("twatch: not inside a tmux session ($TMUX unset)", file=sys.stderr)
         return 2
-    name = tmux.current_session_name()
-    if not name:
-        print("twatch: could not resolve current session name", file=sys.stderr)
+    sid = tmux.current_session_id()
+    if sid is None:
+        print("twatch: could not resolve current session id", file=sys.stderr)
         return 2
+    name = tmux.current_session_name() or sid
     store = store_mod.load_store()
-    meta = store_mod.ensure_entry(store, name)
+    meta = store_mod.ensure_entry(store, sid, name)
     if args.title:
         meta["title"] = args.title
     if args.notes is not None:
@@ -65,11 +66,38 @@ def cmd_create(args) -> int:
         print(f"twatch: tmux error: {r.stderr.strip()}", file=sys.stderr)
         return 2
     store = store_mod.load_store()
-    meta = store_mod.ensure_entry(store, name)
-    if args.title:
-        meta["title"] = args.title
-    store_mod.save_store(store)
+    live = tmux.list_sessions() or []
+    sid = next((s["id"] for s in live if s["name"] == name), None)
+    if sid is not None:
+        meta = store_mod.ensure_entry(store, sid, name)
+        if args.title:
+            meta["title"] = args.title
+        store_mod.save_store(store)
     print(f"created {name}")
+    return 0
+
+
+def cmd_rename(args) -> int:
+    if not tmux.tmux_ok():
+        print("twatch: tmux not found on PATH", file=sys.stderr)
+        return 2
+    live = tmux.list_sessions() or []
+    by_name = {s["name"]: s for s in live}
+    if args.old not in by_name:
+        print(f"twatch: no such session {args.old!r}", file=sys.stderr)
+        return 2
+    if args.new in by_name:
+        print(f"twatch: session {args.new!r} already exists", file=sys.stderr)
+        return 2
+    r = tmux.rename_session(args.old, args.new)
+    if r.returncode != 0:
+        print(f"twatch: tmux error: {r.stderr.strip()}", file=sys.stderr)
+        return 2
+    sid = by_name[args.old]["id"]
+    store = store_mod.load_store()
+    store_mod.ensure_entry(store, sid, args.new)
+    store_mod.save_store(store)
+    print(f"renamed {args.old} -> {args.new}")
     return 0
 
 
@@ -88,6 +116,10 @@ def main(argv=None) -> int:
     pc.add_argument("--title")
     pc.add_argument("command", nargs=argparse.REMAINDER, help="optional -- command...")
 
+    prn = sub.add_parser("rename", help="rename a tmux session")
+    prn.add_argument("old")
+    prn.add_argument("new")
+
     args = p.parse_args(argv)
 
     if args.cmd == "list":
@@ -98,6 +130,8 @@ def main(argv=None) -> int:
         if args.command and args.command[0] == "--":
             args.command = args.command[1:]
         return cmd_create(args)
+    if args.cmd == "rename":
+        return cmd_rename(args)
 
     if not tmux.tmux_ok():
         print("twatch: tmux not found on PATH", file=sys.stderr)
