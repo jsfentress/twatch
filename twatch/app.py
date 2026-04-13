@@ -98,6 +98,33 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str]]]):
         self.dismiss(None)
 
 
+class GroupSessionModal(ModalScreen[Optional[str]]):
+    BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
+
+    def __init__(self, session_name: str, current_group: str) -> None:
+        super().__init__()
+        self.session_name = session_name
+        self.current_group = current_group
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="group-session-box"):
+            yield Static(f"group: {self.session_name}", id="group-session-title")
+            yield Static("group name (blank to ungroup)", classes="group-session-label")
+            yield Input(value=self.current_group, id="group-session-input")
+            yield Static("enter to submit, esc to cancel", id="group-session-hint")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#group-session-input", Input)
+        inp.focus()
+        inp.select_all()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self.dismiss(event.input.value.strip())
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class RenameSessionModal(ModalScreen[Optional[str]]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
@@ -136,9 +163,14 @@ class TwatchApp(App):
     BINDINGS = [
         Binding("n", "new_session", "New"),
         Binding("R", "rename_session", "Rename"),
+        Binding("g", "group_session", "Group"),
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", "Quit", show=False),
         Binding("r", "refresh_now", "Refresh", show=False),
+        Binding("right", "tree_expand", "Expand", show=False),
+        Binding("l", "tree_expand", "Expand", show=False),
+        Binding("left", "tree_collapse", "Collapse", show=False),
+        Binding("h", "tree_collapse", "Collapse", show=False),
     ]
 
     sessions: reactive[list[dict]] = reactive(list, always_update=True)
@@ -148,6 +180,8 @@ class TwatchApp(App):
     def __init__(self) -> None:
         super().__init__()
         self.store: dict = store_mod.load_store()
+        self._collapsed_groups: set[str] = set()
+        self._cursor_group: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -179,38 +213,88 @@ class TwatchApp(App):
 
     def _rebuild_tree(self, sessions: list[dict]) -> None:
         tree = self.query_one("#sidebar", Tree)
+        self._capture_tree_state(tree)
         previous_selected_id = self.selected_id
+        previous_cursor_group = self._cursor_group
 
         tree.clear()
         root = tree.root
 
         reselect_node: Optional[TreeNode] = None
+        reselect_group_node: Optional[TreeNode] = None
 
-        for s in sorted(
-            sessions,
-            key=lambda s: (self.store["sessions"].get(s["id"], {}).get("title") or s["name"]).lower(),
-        ):
+        for s in sessions:
             store_mod.ensure_entry(self.store, s["id"], s["name"])
-            meta = self.store["sessions"].get(s["id"], {})
-            title = meta.get("title") or s["name"]
-            markers = []
-            if s.get("attached"):
-                markers.append("[green]●[/green]")
-            if s.get("dead"):
-                markers.append("[red]✗[/red]")
-            prefix = (" ".join(markers) + " ") if markers else ""
-            leaf = root.add_leaf(
-                f"{prefix}{title}",
-                data={"kind": "session", "id": s["id"], "name": s["name"]},
-            )
-            if previous_selected_id and s["id"] == previous_selected_id:
-                reselect_node = leaf
 
-        target_node = reselect_node
-        if target_node is None and tree.root.children:
-            target_node = tree.root.children[0]
+        def sort_key(s: dict) -> str:
+            meta = self.store["sessions"].get(s["id"], {})
+            return (meta.get("title") or s["name"]).lower()
+
+        buckets: dict[str, list[dict]] = {}
+        for s in sessions:
+            group = self.store["sessions"].get(s["id"], {}).get("group") or ""
+            buckets.setdefault(group, []).append(s)
+
+        ordered_groups = sorted(buckets.keys(), key=lambda g: (g == "", g.lower()))
+
+        for group in ordered_groups:
+            if group:
+                parent = root.add(
+                    f"[bold cyan]{group}[/bold cyan]",
+                    data={"kind": "group", "name": group},
+                    expand=(group not in self._collapsed_groups),
+                )
+                if previous_cursor_group == group:
+                    reselect_group_node = parent
+            else:
+                parent = root
+            for s in sorted(buckets[group], key=sort_key):
+                meta = self.store["sessions"].get(s["id"], {})
+                title = meta.get("title") or s["name"]
+                markers = []
+                if s.get("attached"):
+                    markers.append("[green]●[/green]")
+                if s.get("dead"):
+                    markers.append("[red]✗[/red]")
+                prefix = (" ".join(markers) + " ") if markers else ""
+                leaf = parent.add_leaf(
+                    f"{prefix}{title}",
+                    data={"kind": "session", "id": s["id"], "name": s["name"]},
+                )
+                if previous_selected_id and s["id"] == previous_selected_id:
+                    reselect_node = leaf
+
+        target_node = reselect_group_node or reselect_node
+        if target_node is None:
+            target_node = self._first_session_node(root)
         if target_node is not None:
             self.call_after_refresh(self._focus_node, target_node)
+
+    def _capture_tree_state(self, tree: Tree) -> None:
+        collapsed: set[str] = set()
+        for child in tree.root.children:
+            data = child.data or {}
+            if data.get("kind") == "group" and not child.is_expanded:
+                collapsed.add(data.get("name", ""))
+        self._collapsed_groups = collapsed
+
+        cursor_node = tree.cursor_node
+        if cursor_node is not None:
+            data = cursor_node.data or {}
+            if data.get("kind") == "group":
+                self._cursor_group = data.get("name")
+                return
+        self._cursor_group = None
+
+    def _first_session_node(self, root: TreeNode) -> Optional[TreeNode]:
+        for child in root.children:
+            data = child.data or {}
+            if data.get("kind") == "session":
+                return child
+            found = self._first_session_node(child)
+            if found is not None:
+                return found
+        return None
 
     def _focus_node(self, node: TreeNode) -> None:
         tree = self.query_one("#sidebar", Tree)
@@ -238,8 +322,13 @@ class TwatchApp(App):
         node: TreeNode = event.node
         data = node.data
         if isinstance(data, dict):
-            self.selected_id = data.get("id")
-            self.selected_name = data.get("name")
+            kind = data.get("kind")
+            if kind == "session":
+                self._cursor_group = None
+                self.selected_id = data.get("id")
+                self.selected_name = data.get("name")
+            elif kind == "group":
+                self._cursor_group = data.get("name")
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         data = event.node.data
@@ -290,6 +379,56 @@ class TwatchApp(App):
         existing = {s["name"] for s in self.sessions}
         default_name, _ = tmux.derive_session_name(existing=existing)
         self.push_screen(NewSessionModal(default_name), after)
+
+    def action_tree_expand(self) -> None:
+        tree = self.query_one("#sidebar", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return
+        data = node.data or {}
+        if data.get("kind") == "group":
+            if not node.is_expanded:
+                node.expand()
+                self._collapsed_groups.discard(data.get("name", ""))
+            elif node.children:
+                self._focus_node(node.children[0])
+
+    def action_tree_collapse(self) -> None:
+        tree = self.query_one("#sidebar", Tree)
+        node = tree.cursor_node
+        if node is None:
+            return
+        data = node.data or {}
+        kind = data.get("kind")
+        if kind == "group" and node.is_expanded:
+            node.collapse()
+            self._collapsed_groups.add(data.get("name", ""))
+            return
+        if kind == "session":
+            parent = node.parent
+            if parent is not None and (parent.data or {}).get("kind") == "group":
+                self._focus_node(parent)
+
+    def action_group_session(self) -> None:
+        sid = self.selected_id
+        name = self.selected_name
+        if not sid or not name:
+            self.bell()
+            return
+        current = (self.store["sessions"].get(sid, {}) or {}).get("group", "")
+
+        def after(result: Optional[str]) -> None:
+            if result is None:
+                return
+            store_mod.set_group(self.store, sid, result)
+            store_mod.save_store(self.store)
+            self._rebuild_tree(self.sessions)
+            if result:
+                self.notify(f"{name} -> {result}")
+            else:
+                self.notify(f"{name} ungrouped")
+
+        self.push_screen(GroupSessionModal(name, current), after)
 
     def action_rename_session(self) -> None:
         name = self.selected_name

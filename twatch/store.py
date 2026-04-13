@@ -11,7 +11,7 @@ STORE_DIR = Path.home() / ".twatch"
 STORE_PATH = STORE_DIR / "sessions.json"
 STORE_BAK = STORE_DIR / "sessions.json.bak"
 STALE_SECONDS = 30 * 24 * 3600
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 
 def _empty_store() -> dict:
@@ -32,12 +32,18 @@ def load_store() -> dict:
             pass
         return _empty_store()
 
-    if data.get("version") == SCHEMA_VERSION:
+    version = data.get("version")
+    if version == SCHEMA_VERSION:
         data.setdefault("sessions", {})
         return data
 
+    migrated: Optional[dict] = None
     if "version" not in data:
-        migrated = _migrate_v1_to_v2(data)
+        migrated = _migrate_v2_to_v3(_migrate_v1_to_v2(data))
+    elif version == 2:
+        migrated = _migrate_v2_to_v3(data)
+
+    if migrated is not None:
         try:
             save_store(migrated)
         except Exception:
@@ -69,7 +75,18 @@ def _migrate_v1_to_v2(old: dict) -> dict:
             new_sessions[sid] = migrated
         else:
             new_sessions[f"__orphan__:{old_name}"] = migrated
-    return {"version": SCHEMA_VERSION, "sessions": new_sessions}
+    return {"version": 2, "sessions": new_sessions}
+
+
+def _migrate_v2_to_v3(old: dict) -> dict:
+    sessions = {}
+    for sid, entry in (old.get("sessions") or {}).items():
+        if not isinstance(entry, dict):
+            continue
+        new_entry = dict(entry)
+        new_entry.setdefault("group", "")
+        sessions[sid] = new_entry
+    return {"version": SCHEMA_VERSION, "sessions": sessions}
 
 
 def save_store(store: dict) -> None:
@@ -84,8 +101,15 @@ def default_entry(name: str) -> dict:
         "name": name,
         "title": "",
         "notes": "",
+        "group": "",
         "last_seen": int(time.time()),
     }
+
+
+def set_group(store: dict, sid: str, group: str) -> None:
+    sessions = store.setdefault("sessions", {})
+    if sid in sessions:
+        sessions[sid]["group"] = group.strip()
 
 
 def ensure_entry(store: dict, sid: str, name: str) -> dict:
