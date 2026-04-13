@@ -37,6 +37,7 @@ Keybinds:
 | `↑` / `↓`  | Move selection in the tree                          |
 | `Enter`    | Attach to selected session                          |
 | `n`        | New session (modal prompts for name + command)      |
+| `x`        | Kill selected session (with confirmation)           |
 | `r`        | Refresh now                                         |
 | `q` / `Esc`| Quit                                                |
 

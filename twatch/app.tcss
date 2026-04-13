@@ -102,3 +102,31 @@ RenameSessionModal {
     text-style: italic;
     padding-top: 1;
 }
+
+ConfirmKillModal {
+    align: center middle;
+}
+
+#confirm-kill-box {
+    width: 50;
+    height: auto;
+    padding: 1 2;
+    background: $surface;
+    border: tall $error;
+}
+
+#confirm-kill-title {
+    text-style: bold;
+    color: $error;
+    padding-bottom: 1;
+}
+
+.confirm-kill-label {
+    color: $text-muted;
+}
+
+#confirm-kill-hint {
+    color: $text-disabled;
+    text-style: italic;
+    padding-top: 1;
+}

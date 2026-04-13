@@ -206,6 +206,33 @@ class RenameSessionModal(ModalScreen[Optional[str]]):
         self.dismiss(None)
 
 
+class ConfirmKillModal(ModalScreen[bool]):
+    BINDINGS = [
+        Binding("y", "confirm", "Confirm", show=False),
+        Binding("enter", "confirm", "Confirm", show=False),
+        Binding("n", "cancel", "Cancel", show=False),
+        Binding("escape", "cancel", "Cancel", show=False),
+    ]
+
+    def __init__(self, session_name: str, title: Optional[str]) -> None:
+        super().__init__()
+        self.session_name = session_name
+        self.display_title = title
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="confirm-kill-box"):
+            yield Static(f"kill session: {self.session_name}", id="confirm-kill-title")
+            if self.display_title and self.display_title != self.session_name:
+                yield Static(self.display_title, classes="confirm-kill-label")
+            yield Static("y / enter to confirm, n / esc to cancel", id="confirm-kill-hint")
+
+    def action_confirm(self) -> None:
+        self.dismiss(True)
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class TwatchApp(App):
     CSS_PATH = "app.tcss"
     TITLE = "twatch"
@@ -215,6 +242,7 @@ class TwatchApp(App):
         Binding("n", "new_session", "New"),
         Binding("R", "rename_session", "Rename"),
         Binding("g", "group_session", "Group"),
+        Binding("x", "kill_session", "Kill"),
         Binding("q", "quit", "Quit"),
         Binding("escape", "quit", "Quit", show=False),
         Binding("r", "refresh_now", "Refresh", show=False),
@@ -516,6 +544,35 @@ class TwatchApp(App):
             self.notify(f"renamed to {new_name}")
 
         self.push_screen(RenameSessionModal(name), after)
+
+    def action_kill_session(self) -> None:
+        sid = self.selected_id
+        name = self.selected_name
+        if not sid or not name:
+            self.bell()
+            return
+        meta = self.store["sessions"].get(sid, {}) or {}
+        title = meta.get("title")
+
+        def after(result: Optional[bool]) -> None:
+            if not result:
+                return
+            r = tmux.kill_session(name)
+            if r.returncode != 0:
+                self.notify(
+                    (r.stderr or "kill-session failed").strip()[:120],
+                    severity="error",
+                )
+                return
+            self.store["sessions"].pop(sid, None)
+            store_mod.save_store(self.store)
+            if self.selected_id == sid:
+                self.selected_id = None
+                self.selected_name = None
+            self.refresh_now()
+            self.notify(f"killed {name}")
+
+        self.push_screen(ConfirmKillModal(name, title), after)
 
     def refresh_now(self) -> None:
         fresh = tmux.list_sessions() or []
