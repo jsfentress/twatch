@@ -139,9 +139,12 @@ def attach(name: str) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", "attach", "-t", name])
 
 
-def new_session(name: str, cmd: str = "") -> subprocess.CompletedProcess:
-    args = ["tmux", "new-session", "-d", "-s", name]
-    final = claudify(cmd)
+def new_session(name: str, cmd: str | None = None, cwd: str | None = None) -> subprocess.CompletedProcess:
+    args = ["tmux", "new-session", "-d"]
+    if cwd:
+        args += ["-c", cwd]
+    args += ["-s", name]
+    final = claudify(cmd or "")
     if final:
         args.append(f"/bin/sh -c {shlex.quote(final)}")
     return subprocess.run(args, capture_output=True, text=True)

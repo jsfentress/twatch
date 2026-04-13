@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import subprocess
 from typing import Optional
 
@@ -10,6 +11,7 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.reactive import reactive
 from textual.screen import ModalScreen
+from textual.suggester import Suggester
 from textual.widgets import Footer, Header, Input, Static, Tree
 from textual.widgets.tree import TreeNode
 
@@ -18,6 +20,45 @@ from twatch import tmux
 
 
 POLL_SECONDS = 0.5
+
+
+class PathSuggester(Suggester):
+    async def get_suggestion(self, value: str) -> str | None:
+        if not value:
+            return None
+        if value.startswith("/"):
+            roots = [None]
+        elif value.startswith("~"):
+            roots = [None]
+        else:
+            roots = [os.path.expanduser("~"), "/"]
+        for root in roots:
+            if value.startswith("/"):
+                expanded = value
+            elif value.startswith("~"):
+                expanded = os.path.expanduser(value)
+            else:
+                expanded = os.path.join(root, value)
+            if expanded.endswith("/"):
+                parent_dir = expanded if expanded == "/" else expanded.rstrip("/")
+                prefix = ""
+            else:
+                parent_dir = os.path.dirname(expanded)
+                if not parent_dir:
+                    parent_dir = "/" if value.startswith("/") else (root or os.path.expanduser("~"))
+                prefix = os.path.basename(expanded)
+            try:
+                entries = os.listdir(parent_dir)
+            except OSError:
+                continue
+            prefix_lower = prefix.lower()
+            for entry in sorted(entries, key=str.lower):
+                if not entry.lower().startswith(prefix_lower):
+                    continue
+                if not os.path.isdir(os.path.join(parent_dir, entry)):
+                    continue
+                return value + entry[len(prefix):]
+        return None
 
 
 class DetailsPane(Static):
@@ -60,7 +101,7 @@ class DetailsPane(Static):
         notes.update(f"[dim]notes[/dim]\n{notes_text}" if notes_text else "")
 
 
-class NewSessionModal(ModalScreen[Optional[tuple[str, str]]]):
+class NewSessionModal(ModalScreen[Optional[tuple[str, str, str]]]):
     BINDINGS = [Binding("escape", "cancel", "Cancel", show=False)]
 
     def __init__(self, default_name: str) -> None:
@@ -76,6 +117,12 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str]]]):
                 placeholder="session name",
                 id="new-session-name",
             )
+            yield Static("working directory (optional)", classes="new-session-label")
+            yield Input(
+                placeholder="Working directory (optional, tab to autocomplete)",
+                id="new-session-cwd",
+                suggester=PathSuggester(),
+            )
             yield Static("command (optional)", classes="new-session-label")
             yield Input(placeholder="command", id="new-session-cmd")
             yield Static("enter to submit, esc to cancel", id="new-session-hint")
@@ -85,14 +132,18 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str]]]):
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "new-session-name":
+            self.query_one("#new-session-cwd", Input).focus()
+            return
+        if event.input.id == "new-session-cwd":
             self.query_one("#new-session-cmd", Input).focus()
             return
         name_value = (
             self.query_one("#new-session-name", Input).value.strip()
             or self._default_name
         )
+        cwd = self.query_one("#new-session-cwd", Input).value.strip()
         cmd = self.query_one("#new-session-cmd", Input).value.strip()
-        self.dismiss((name_value, cmd))
+        self.dismiss((name_value, cwd, cmd))
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -360,13 +411,13 @@ class TwatchApp(App):
         self.refresh_now()
 
     def action_new_session(self) -> None:
-        def after(result: Optional[tuple[str, str]]) -> None:
+        def after(result: Optional[tuple[str, str, str]]) -> None:
             if not result:
                 return
-            name, cmd = result
+            name, cwd, cmd = result
             if not name:
                 return
-            r = tmux.new_session(name, cmd)
+            r = tmux.new_session(name, cmd, cwd=cwd or None)
             if r.returncode != 0:
                 self.notify(
                     (r.stderr or "new-session failed").strip()[:120],
