@@ -141,7 +141,19 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str, str]]]):
             self.query_one("#new-session-name", Input).value.strip()
             or self._default_name
         )
-        cwd = self.query_one("#new-session-cwd", Input).value.strip()
+        cwd_input = self.query_one("#new-session-cwd", Input)
+        cwd_raw = cwd_input.value.strip()
+        cwd = ""
+        if cwd_raw:
+            cwd = os.path.abspath(os.path.expanduser(cwd_raw))
+            if not os.path.isdir(cwd):
+                self.app.notify(
+                    f"not a directory: {cwd_raw}",
+                    severity="error",
+                    timeout=4,
+                )
+                cwd_input.focus()
+                return
         cmd = self.query_one("#new-session-cmd", Input).value.strip()
         self.dismiss((name_value, cwd, cmd))
 
