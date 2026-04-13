@@ -22,6 +22,26 @@ from twatch import tmux
 POLL_SECONDS = 0.5
 
 
+def _resolve_cwd_input(raw: str) -> Optional[str]:
+    """Resolve a user-entered directory path to an absolute dir, or None.
+
+    Mirrors PathSuggester's resolution order: absolute and ~-prefixed paths
+    are used as-is; bare relative paths are resolved against $HOME first,
+    then the process cwd.
+    """
+    if raw.startswith("/") or raw.startswith("~"):
+        candidates = [os.path.abspath(os.path.expanduser(raw))]
+    else:
+        candidates = [
+            os.path.abspath(os.path.join(os.path.expanduser("~"), raw)),
+            os.path.abspath(raw),
+        ]
+    for c in candidates:
+        if os.path.isdir(c):
+            return c
+    return None
+
+
 class PathSuggester(Suggester):
     async def get_suggestion(self, value: str) -> str | None:
         if not value:
@@ -145,8 +165,8 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str, str]]]):
         cwd_raw = cwd_input.value.strip()
         cwd = ""
         if cwd_raw:
-            cwd = os.path.abspath(os.path.expanduser(cwd_raw))
-            if not os.path.isdir(cwd):
+            cwd = _resolve_cwd_input(cwd_raw)
+            if cwd is None:
                 self.app.notify(
                     f"not a directory: {cwd_raw}",
                     severity="error",
