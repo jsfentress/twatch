@@ -42,6 +42,20 @@ def _resolve_cwd_input(raw: str) -> Optional[str]:
     return None
 
 
+class PathInput(Input):
+    """Input that accepts the current suggestion on Tab, else cycles focus."""
+
+    BINDINGS = [Binding("tab", "tab_complete", "Complete path", show=False)]
+
+    def action_tab_complete(self) -> None:
+        suggestion = self._suggestion
+        if suggestion and suggestion != self.value:
+            self.value = suggestion
+            self.cursor_position = len(suggestion)
+            return
+        self.screen.focus_next()
+
+
 class PathSuggester(Suggester):
     async def get_suggestion(self, value: str) -> str | None:
         if not value:
@@ -138,7 +152,7 @@ class NewSessionModal(ModalScreen[Optional[tuple[str, str, str]]]):
                 id="new-session-name",
             )
             yield Static("working directory (optional)", classes="new-session-label")
-            yield Input(
+            yield PathInput(
                 placeholder="Working directory (optional, tab to autocomplete)",
                 id="new-session-cwd",
                 suggester=PathSuggester(),
